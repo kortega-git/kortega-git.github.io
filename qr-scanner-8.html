@@ -80,10 +80,10 @@
   }
   .scan-frame {
     position: absolute;
-    top: 12%;
-    left: 12%;
-    right: 12%;
-    bottom: 12%;
+    top: 22.5%;
+    left: 22.5%;
+    right: 22.5%;
+    bottom: 22.5%;
     border: 3px solid var(--accent);
     border-radius: 12px;
     box-shadow: 0 0 0 9999px rgba(0,0,0,0.35);
@@ -135,12 +135,51 @@
   #startBtn:not(:disabled):hover { background: var(--accent-hover); }
   #stopBtn { background: var(--danger); }
   #stopBtn:not(:disabled):hover { background: var(--danger-hover); }
-  #exportCsvBtn, #torchBtn, #dedupBtn { background: var(--neutral); }
-  #exportCsvBtn:not(:disabled):hover, #torchBtn:not(:disabled):hover { background: var(--neutral-hover); }
-  #dedupBtn.dedup-on { background: var(--accent); }
-  #dedupBtn.dedup-on:hover { background: var(--accent-hover); }
-  #dedupBtn.dedup-off { background: var(--neutral); }
-  #dedupBtn.dedup-off:hover { background: var(--neutral-hover); }
+  #exportCsvBtn, #torchBtn, #dedupBtn, #ocrBtn, #hiResBtn { background: var(--neutral); }
+  #exportCsvBtn:not(:disabled):hover, #torchBtn:not(:disabled):hover, #ocrBtn:not(:disabled):hover { background: var(--neutral-hover); }
+  #dedupBtn.dedup-on, #hiResBtn.dedup-on { background: var(--accent); }
+  #dedupBtn.dedup-on:hover, #hiResBtn.dedup-on:hover { background: var(--accent-hover); }
+  #dedupBtn.dedup-off, #hiResBtn.dedup-off { background: var(--neutral); }
+  #dedupBtn.dedup-off:hover, #hiResBtn.dedup-off:hover { background: var(--neutral-hover); }
+
+  .ocr-panel {
+    width: 100%;
+    max-width: 480px;
+    margin-top: 1rem;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.6rem 0.8rem;
+  }
+  .ocr-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.9rem;
+    margin-bottom: 0.4rem;
+  }
+  .ocr-panel ul { list-style: none; margin: 0; padding: 0; }
+  .ocr-panel li {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.45rem 0;
+    border-top: 1px solid var(--border);
+    font-size: 0.85rem;
+    word-break: break-all;
+  }
+  .ocr-panel li .ocr-text { flex: 1; }
+  .ocr-panel li .ocr-conf { color: var(--text-muted); font-size: 0.7rem; }
+  .ocr-panel button {
+    flex: none;
+    padding: 0.35rem 0.8rem;
+    font-size: 0.8rem;
+    border-radius: 8px;
+    background: var(--neutral);
+  }
+  .ocr-panel .ocr-foot { margin-top: 0.5rem; display: flex; gap: 0.5rem; }
+  .ocr-panel .ocr-foot button { flex: 1; padding: 0.55rem; font-size: 0.85rem; }
+  .ocr-panel button.clear-link { background: none; padding: 0; font-size: 0.78rem; }
   #torchBtn.torch-on { background: var(--accent); }
   #torchBtn.torch-on:hover { background: var(--accent-hover); }
 
@@ -247,6 +286,22 @@
   <button id="exportCsvBtn" disabled>Export CSV</button>
 </div>
 
+<div class="controls">
+  <button id="ocrBtn" disabled>Read Text (OCR)</button>
+  <button id="hiResBtn" class="dedup-on">Hi-Res: On</button>
+</div>
+
+<div class="ocr-panel" id="ocrPanel" style="display:none;">
+  <div class="ocr-head">
+    <strong>Text found in the box</strong>
+    <button id="ocrCloseBtn" class="clear-link">Close</button>
+  </div>
+  <ul id="ocrList"></ul>
+  <div class="ocr-foot">
+    <button id="ocrAddAllBtn">Add all to list</button>
+  </div>
+</div>
+
 <div class="results">
   <div class="results-header">
     <h2>Scanned codes</h2>
@@ -257,7 +312,7 @@
   <button class="clear-link" id="clearBtn" style="display:none;">Clear all</button>
 </div>
 
-<div style="margin-top:2rem;font-size:0.7rem;color:#64748b;text-align:center;">v3 · built 2026-10-29</div>
+<div style="margin-top:2rem;font-size:0.7rem;color:#64748b;text-align:center;">v4 · built 2026-10-29</div>
 <canvas id="hidden-canvas"></canvas>
 
 <script>
@@ -283,6 +338,12 @@
   const zoomWrap = document.getElementById('zoomWrap');
   const zoomSlider = document.getElementById('zoomSlider');
   const dedupBtn = document.getElementById('dedupBtn');
+  const ocrBtn = document.getElementById('ocrBtn');
+  const hiResBtn = document.getElementById('hiResBtn');
+  const ocrPanel = document.getElementById('ocrPanel');
+  const ocrList = document.getElementById('ocrList');
+  const ocrAddAllBtn = document.getElementById('ocrAddAllBtn');
+  const ocrCloseBtn = document.getElementById('ocrCloseBtn');
   const statusEl = document.getElementById('status');
   const listEl = document.getElementById('list');
   const countBadge = document.getElementById('countBadge');
@@ -303,6 +364,20 @@
   let highResSupported = false;
   let highResBusy = false;
   let highResTimerId = null;
+  let hiResEnabled = true;
+
+  // The green box on screen is this fraction of the (square) view. It is also the
+  // region used for the zoomed-in "center crop" decode pass and for OCR.
+  const ROI_FRACTION = 0.55;
+
+  // OCR (Tesseract.js) is downloaded only when first used, so the page stays small.
+  // window.OCR_OPTIONS can override URLs (used for offline/self-hosted setups and testing).
+  const OCR_CFG = Object.assign({
+    scriptUrl: 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js'
+  }, window.OCR_OPTIONS || {});
+  let ocrBusy = false;
+  let ocrWorkerPromise = null;
+  let ocrLines = [];
 
   function setupReader() {
     const hints = new Map();
@@ -428,6 +503,7 @@
     videoWrap.classList.add('active');
     scanning = true;
     startBtn.disabled = true;
+    ocrBtn.disabled = false;
     stopBtn.disabled = false;
     statusEl.textContent = 'Scanning… point camera at a QR code or Data Matrix code';
 
@@ -446,7 +522,7 @@
     }
 
     tick();
-    if (highResSupported) scheduleHighResCapture();
+    if (highResSupported && hiResEnabled) scheduleHighResCapture();
   }
 
   // Periodically grabs a full-resolution still (not the downsampled video
@@ -458,8 +534,9 @@
   }
 
   async function runHighResCapture() {
-    if (!scanning || !imageCapture || highResBusy) {
-      if (scanning) scheduleHighResCapture();
+    if (!scanning || !hiResEnabled) return;
+    if (!imageCapture || highResBusy || ocrBusy) {
+      scheduleHighResCapture();
       return;
     }
     highResBusy = true;
@@ -482,15 +559,15 @@
         hiResCanvas.width = bitmap.width;
         hiResCanvas.height = bitmap.height;
         hiResCtx.drawImage(bitmap, 0, 0);
-        const result = decodeWithFallback(hiResCanvas);
-        handleDecodedResult(result);
+        const found = decodeWithFallback(hiResCanvas);
+        handleDecodedResult(found.result, found.pass === 'crop' ? 'hi-res photo, center crop' : 'hi-res photo');
         if (bitmap.close) bitmap.close();
       }
     } catch (err) {
       console.warn('High-res capture pass failed', err);
     } finally {
       highResBusy = false;
-      if (scanning && highResSupported) scheduleHighResCapture();
+      if (scanning && highResSupported && hiResEnabled) scheduleHighResCapture();
     }
   }
 
@@ -513,6 +590,7 @@
     videoWrap.classList.remove('active');
     startBtn.disabled = false;
     stopBtn.disabled = true;
+    ocrBtn.disabled = true;
     statusEl.textContent = results.length
       ? 'Stopped. ' + results.length + ' code(s) scanned.'
       : 'Stopped.';
@@ -552,16 +630,15 @@
   // Try full frame first, then a center crop upscaled 2x as a fallback.
   function decodeWithFallback(sourceCanvas) {
     let result = decodeCanvas(sourceCanvas);
-    if (!result) {
-      const cropped = cropAndUpscale(sourceCanvas, 0.55, 2.2);
-      result = decodeCanvas(cropped);
-    }
-    return result;
+    if (result) return { result: result, pass: 'full' };
+    const cropped = cropAndUpscale(sourceCanvas, ROI_FRACTION, 2.2);
+    result = decodeCanvas(cropped);
+    return { result: result, pass: result ? 'crop' : null };
   }
 
   // Shared handling for any decoded result, regardless of which pass found it
   // (live video frame, ROI crop, or high-res still capture).
-  function handleDecodedResult(result) {
+  function handleDecodedResult(result, sourceLabel) {
     if (!result) return;
     const format = result.getBarcodeFormat ? result.getBarcodeFormat() : null;
     const formatName = format !== null && ZXing.BarcodeFormat[format] !== undefined
@@ -583,7 +660,7 @@
       const time = new Date().toLocaleString();
       results.push({ text: text, time: time, format: formatName });
       updateResultsUI();
-      statusEl.textContent = 'Scanned! Continue scanning or tap Stop.';
+      statusEl.textContent = 'Scanned' + (sourceLabel ? ' via ' + sourceLabel : '') + '. Continue scanning or tap Stop.';
     }
   }
 
@@ -594,8 +671,8 @@
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const result = decodeWithFallback(canvas);
-        handleDecodedResult(result);
+        const found = decodeWithFallback(canvas);
+        handleDecodedResult(found.result, found.pass === 'crop' ? 'center crop' : 'live frame');
       }
     } catch (err) {
       console.error('Scan loop error', err);
@@ -646,6 +723,150 @@
     }
   }
 
+
+  // ---------- OCR (read text) ----------
+  function escHtml(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.onload = resolve;
+      s.onerror = () => reject(new Error('Could not download the OCR library (internet is needed the first time).'));
+      document.head.appendChild(s);
+    });
+  }
+
+  function getOcrWorker() {
+    if (!ocrWorkerPromise) {
+      ocrWorkerPromise = (async () => {
+        if (typeof Tesseract === 'undefined') await loadScript(OCR_CFG.scriptUrl);
+        const opts = {
+          logger: m => {
+            if (ocrBusy && m && m.status) {
+              const pct = typeof m.progress === 'number' ? ' ' + Math.round(m.progress * 100) + '%' : '';
+              statusEl.textContent = 'OCR: ' + m.status + pct;
+            }
+          }
+        };
+        ['workerPath', 'corePath', 'langPath'].forEach(k => { if (OCR_CFG[k]) opts[k] = OCR_CFG[k]; });
+        return await Tesseract.createWorker('eng', 1, opts);
+      })().catch(err => { ocrWorkerPromise = null; throw err; });
+    }
+    return ocrWorkerPromise;
+  }
+
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  // Prefer a full-resolution photo (sharper text); fall back to the current video frame.
+  async function captureStillCanvas() {
+    for (let i = 0; i < 20 && highResBusy; i++) await sleep(100);
+    if (imageCapture) {
+      try {
+        const blob = await imageCapture.takePhoto();
+        const bmp = await createImageBitmap(blob);
+        const c = document.createElement('canvas');
+        c.width = bmp.width;
+        c.height = bmp.height;
+        c.getContext('2d').drawImage(bmp, 0, 0);
+        if (bmp.close) bmp.close();
+        return c;
+      } catch (e) {
+        console.warn('takePhoto failed for OCR, using video frame', e);
+      }
+    }
+    const c = document.createElement('canvas');
+    c.width = video.videoWidth;
+    c.height = video.videoHeight;
+    c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
+    return c;
+  }
+
+  // Center square (the green box), scaled down if huge so OCR stays reasonably fast.
+  function centerCrop(src, fraction, maxSide) {
+    const size = Math.floor(Math.min(src.width, src.height) * fraction);
+    const sx = Math.floor((src.width - size) / 2);
+    const sy = Math.floor((src.height - size) / 2);
+    const scale = Math.min(1, maxSide / size);
+    const out = document.createElement('canvas');
+    out.width = Math.round(size * scale);
+    out.height = Math.round(size * scale);
+    out.getContext('2d').drawImage(src, sx, sy, size, size, 0, 0, out.width, out.height);
+    return out;
+  }
+
+  // Keep only plausible lines: drop tiny fragments and low-confidence noise.
+  function extractOcrLines(data) {
+    let raw = [];
+    if (data && Array.isArray(data.lines) && data.lines.length) {
+      raw = data.lines.map(l => ({ text: l.text, conf: l.confidence }));
+    } else if (data && data.text) {
+      raw = data.text.split('\n').map(t => ({ text: t, conf: null }));
+    }
+    const seen = new Set();
+    const out = [];
+    raw.forEach(l => {
+      const text = String(l.text || '').replace(/\s+/g, ' ').trim();
+      const alnum = (text.match(/[A-Za-z0-9]/g) || []).length;
+      if (text.length < 3 || alnum < 3) return;
+      if (l.conf !== null && l.conf < 50) return;
+      if (seen.has(text)) return;
+      seen.add(text);
+      out.push({ text: text, conf: l.conf === null ? null : Math.round(l.conf), added: false });
+    });
+    return out;
+  }
+
+  function renderOcrPanel() {
+    ocrList.innerHTML = ocrLines.map((l, i) =>
+      '<li><span class="ocr-text">' + escHtml(l.text) +
+      (l.conf !== null ? ' <span class="ocr-conf">' + l.conf + '%</span>' : '') +
+      '</span><button data-i="' + i + '"' + (l.added ? ' disabled' : '') + '>' +
+      (l.added ? 'Added' : 'Add') + '</button></li>'
+    ).join('');
+    ocrAddAllBtn.disabled = ocrLines.length === 0 || ocrLines.every(l => l.added);
+    ocrPanel.style.display = 'block';
+  }
+
+  function addOcrLine(i) {
+    const l = ocrLines[i];
+    if (!l || l.added) return false;
+    l.added = true;
+    if (skipDuplicates && results.some(r => r.text === l.text)) return false;
+    results.push({ text: l.text, time: new Date().toLocaleString(), format: 'OCR' });
+    updateResultsUI();
+    return true;
+  }
+
+  async function runOcr() {
+    if (ocrBusy || !scanning) return;
+    ocrBusy = true;
+    ocrBtn.disabled = true;
+    ocrBtn.textContent = 'Reading…';
+    statusEl.textContent = 'OCR: starting…';
+    try {
+      const worker = await getOcrWorker();
+      statusEl.textContent = 'OCR: capturing image…';
+      const still = await captureStillCanvas();
+      const crop = centerCrop(still, ROI_FRACTION, 1800);
+      const { data } = await worker.recognize(crop);
+      ocrLines = extractOcrLines(data);
+      renderOcrPanel();
+      statusEl.textContent = ocrLines.length
+        ? 'OCR found ' + ocrLines.length + ' line(s). Tap Add on the ones you want.'
+        : 'OCR found no clear text. Try more light, a steadier hold, or zoom in on the text.';
+    } catch (err) {
+      console.error('OCR failed', err);
+      statusEl.textContent = 'OCR failed: ' + (err && err.message ? err.message : err);
+    } finally {
+      ocrBusy = false;
+      ocrBtn.textContent = 'Read Text (OCR)';
+      ocrBtn.disabled = !scanning;
+    }
+  }
+
   function clearResults() {
     results.length = 0;
     lastCode = null;
@@ -663,6 +884,33 @@
     dedupBtn.classList.toggle('dedup-off', !skipDuplicates);
   });
   clearBtn.addEventListener('click', clearResults);
+  ocrBtn.addEventListener('click', runOcr);
+  ocrCloseBtn.addEventListener('click', () => { ocrPanel.style.display = 'none'; });
+  ocrList.addEventListener('click', e => {
+    const b = e.target.closest('button[data-i]');
+    if (!b) return;
+    if (addOcrLine(parseInt(b.dataset.i, 10))) beep();
+    renderOcrPanel();
+  });
+  ocrAddAllBtn.addEventListener('click', () => {
+    let any = false;
+    ocrLines.forEach((l, i) => { if (addOcrLine(i)) any = true; });
+    if (any) beep();
+    renderOcrPanel();
+  });
+  hiResBtn.addEventListener('click', () => {
+    hiResEnabled = !hiResEnabled;
+    hiResBtn.textContent = hiResEnabled ? 'Hi-Res: On' : 'Hi-Res: Off';
+    hiResBtn.classList.toggle('dedup-on', hiResEnabled);
+    hiResBtn.classList.toggle('dedup-off', !hiResEnabled);
+    if (hiResEnabled && scanning) {
+      if (highResSupported) scheduleHighResCapture();
+      else statusEl.textContent = 'Hi-res photo capture is not supported on this device (center-crop scan is still active).';
+    } else if (!hiResEnabled && highResTimerId) {
+      clearTimeout(highResTimerId);
+      highResTimerId = null;
+    }
+  });
   zoomSlider.addEventListener('input', async () => {
     if (!currentTrack) return;
     try {
