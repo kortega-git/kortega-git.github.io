@@ -378,6 +378,12 @@
   let ocrBusy = false;
   let ocrWorkerPromise = null;
   let ocrLines = [];
+  let statusLockUntil = 0;
+
+  // Scan messages must not overwrite OCR progress/results/errors while they are being read.
+  function setScanStatus(msg) {
+    if (!ocrBusy && Date.now() >= statusLockUntil) statusEl.textContent = msg;
+  }
 
   function setupReader() {
     const hints = new Map();
@@ -654,13 +660,13 @@
     lastScanTime = now;
     if (alreadyInList) {
       beep();
-      statusEl.textContent = 'Already scanned — skipped duplicate.';
+      setScanStatus('Already scanned — skipped duplicate.');
     } else {
       beep();
       const time = new Date().toLocaleString();
       results.push({ text: text, time: time, format: formatName });
       updateResultsUI();
-      statusEl.textContent = 'Scanned' + (sourceLabel ? ' via ' + sourceLabel : '') + '. Continue scanning or tap Stop.';
+      setScanStatus('Scanned' + (sourceLabel ? ' via ' + sourceLabel : '') + '. Continue scanning or tap Stop.');
     }
   }
 
@@ -854,11 +860,13 @@
       const { data } = await worker.recognize(crop);
       ocrLines = extractOcrLines(data);
       renderOcrPanel();
+      statusLockUntil = Date.now() + 8000;
       statusEl.textContent = ocrLines.length
         ? 'OCR found ' + ocrLines.length + ' line(s). Tap Add on the ones you want.'
         : 'OCR found no clear text. Try more light, a steadier hold, or zoom in on the text.';
     } catch (err) {
       console.error('OCR failed', err);
+      statusLockUntil = Date.now() + 10000;
       statusEl.textContent = 'OCR failed: ' + (err && err.message ? err.message : err);
     } finally {
       ocrBusy = false;
